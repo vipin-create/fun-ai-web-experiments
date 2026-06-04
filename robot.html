@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Realistic Mech Puppeteer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 240px;
+            height: 180px;
+            border: 3px solid #00aaff;
+            box-shadow: 0 0 15px #00aaff;
+            border-radius: 8px;
+            overflow: hidden;
+            z-index: 10;
+        }
+        #input_video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror */
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00aaff;
+            font-family: 'Orbitron', sans-serif; /* Sci-fi font if available */
+            pointer-events: none;
+            text-shadow: 0 0 10px rgba(0,170,255,0.5);
+        }
+        h1 { margin: 0; text-transform: uppercase; letter-spacing: 2px; }
+        .instruction { background: rgba(0,20,40,0.7); padding: 15px; border-left: 4px solid #00aaff; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Type-01 Mech Unit</h1>
+        <div class="instruction">
+            <strong>Status:</strong> <span id="status" style="color:yellow">Initializing Core...</span><br>
+            Step back. Full body required for neural link.
+        </div>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" autoplay playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+
+    <script>
+        // --- THREE.JS SCENE SETUP ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000000, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.2, 6); 
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        document.body.appendChild(renderer.domElement);
+
+        // --- HIGH-END LIGHTING ---
+        const ambLight = new THREE.AmbientLight(0x222222); 
+        scene.add(ambLight);
+
+        // Main Key Light (creates shadows)
+        const spotLight = new THREE.SpotLight(0xffffff, 1.5);
+        spotLight.position.set(5, 12, 8);
+        spotLight.angle = Math.PI / 6;
+        spotLight.penumbra = 0.3;
+        spotLight.castShadow = true;
+        spotLight.shadow.mapSize.width = 2048; 
+        spotLight.shadow.mapSize.height = 2048;
+        scene.add(spotLight);
+
+        // Rim Light (blue outline effect)
+        const rimLight = new THREE.PointLight(0x00aaff, 2, 20);
+        rimLight.position.set(-5, 3, -5);
+        scene.add(rimLight);
+
+        // Floor (Reflective Sci-fi Grid)
+        const planeGeo = new THREE.PlaneGeometry(100, 100);
+        const planeMat = new THREE.MeshStandardMaterial({ 
+            color: 0x111111, 
+            metalness: 0.8, 
+            roughness: 0.1,
+            side: THREE.DoubleSide
+        });
+        const floor = new THREE.Mesh(planeGeo, planeMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -2.5;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        const gridHelper = new THREE.GridHelper(100, 50, 0x00aaff, 0x222222);
+        gridHelper.position.y = -2.49;
+        scene.add(gridHelper);
+
+        // --- MECH AVATAR CONSTRUCTION ---
+
+        // Materials
+        const darkMetalMat = new THREE.MeshStandardMaterial({
+            color: 0x333333,
+            metalness: 0.9,
+            roughness: 0.2,
+        });
+
+        const brightArmorMat = new THREE.MeshStandardMaterial({
+            color: 0xaaaaaa,
+            metalness: 0.7,
+            roughness: 0.3,
+        });
+
+        const jointGlowMat = new THREE.MeshStandardMaterial({
+            color: 0x000000,
+            emissive: 0x00d9ff,
+            emissiveIntensity: 1,
+            metalness: 1,
+            roughness: 0
+        });
+
+        // Geometries used repeatedly
+        const armorGeoLg = new THREE.BoxGeometry(0.6, 0.8, 0.7); // Torso
+        const armorGeoMd = new THREE.BoxGeometry(0.35, 0.5, 0.35); // Limbs
+        const jointGeo = new THREE.IcosahedronGeometry(0.2, 1); // Faceted joints
+
+        const mechParts = {};
+        const bones = [];
+
+        function createPart(name, geometry, material, isJoint = false) {
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.castShadow = true;
+            if(!isJoint) mesh.receiveShadow = true;
+            scene.add(mesh);
+            mechParts[name] = mesh;
+        }
+
+        // Define Body Parts
+        createPart('head', new THREE.DodecahedronGeometry(0.3), brightArmorMat);
+        createPart('torso', armorGeoLg, darkMetalMat);
+        
+        // Limbs (Armor Plates)
+        createPart('leftArmUpper', armorGeoMd, brightArmorMat);
+        createPart('leftArmLower', armorGeoMd, brightArmorMat);
+        createPart('rightArmUpper', armorGeoMd, brightArmorMat);
+        createPart('rightArmLower', armorGeoMd, brightArmorMat);
+        
+        createPart('leftLegUpper', armorGeoMd, brightArmorMat);
+        createPart('leftLegLower', armorGeoMd, brightArmorMat);
+        createPart('rightLegUpper', armorGeoMd, brightArmorMat);
+        createPart('rightLegLower', armorGeoMd, brightArmorMat);
+
+        // Joints (Glowing spheres)
+        const joints = ['leftShoulder', 'rightShoulder', 'leftElbow', 'rightElbow', 'leftHip', 'rightHip', 'leftKnee', 'rightKnee'];
+        joints.forEach(j => createPart(j, jointGeo, jointGlowMat, true));
+
+        // Energy connectors (The Skeleton)
+        const energyBeamMat = new THREE.LineBasicMaterial({ color: 0x00aaff, linewidth: 2, opacity: 0.4, transparent: true });
+        const connections = [
+             ['leftShoulder', 'leftElbow'], ['leftElbow', 'leftArmLower'], // Use ArmLower as wrist proxy
+             ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightArmLower'],
+             ['leftHip', 'leftKnee'], ['leftKnee', 'leftLegLower'],
+             ['rightHip', 'rightKnee'], ['rightKnee', 'rightLegLower'],
+             ['leftShoulder', 'rightShoulder'], ['leftHip', 'rightHip'], // Torso framing
+             ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip']
+        ];
+        connections.forEach(pair => {
+            const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+            const line = new THREE.Line(geometry, energyBeamMat);
+            scene.add(line);
+            bones.push({ line: line, start: pair[0], end: pair[1] });
+        });
+
+
+        // --- MEDIAPIPE INTEGRATION ---
+        const statusElement = document.getElementById('status');
+
+        function onResults(results) {
+            if (!results.poseLandmarks) return;
+            statusElement.innerText = "Neural Link Active";
+            statusElement.style.color = "#00aaff";
+
+            const lm = results.poseLandmarks;
+
+            // Coordinate mapper
+            const mapPos = (landmark) => new THREE.Vector3(
+                (landmark.x - 0.5) * -7, 
+                (1 - landmark.y) * 6 - 2.5, 
+                landmark.z * -4 
+            );
+
+            const pos = {};
+            // Extract key landmarks locations first
+            pos.nose = mapPos(lm[0]);
+            pos.l_sh = mapPos(lm[11]); pos.r_sh = mapPos(lm[12]);
+            pos.l_el = mapPos(lm[13]); pos.r_el = mapPos(lm[14]);
+            pos.l_wr = mapPos(lm[15]); pos.r_wr = mapPos(lm[16]);
+            pos.l_hip = mapPos(lm[23]); pos.r_hip = mapPos(lm[24]);
+            pos.l_knee = mapPos(lm[25]); pos.r_knee = mapPos(lm[26]);
+            pos.l_ank = mapPos(lm[27]); pos.r_ank = mapPos(lm[28]);
+
+            // Helper: Interpolate midpoint
+            const midPoint = (p1, p2) => new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+
+            // --- Update Mesh Positions ---
+
+            // Head sits above nose
+            mechParts.head.position.lerp(pos.nose.clone().add(new THREE.Vector3(0,0.3,0)), 0.5);
+            
+            // Torso sits exactly between shoulders and hips
+            const shoulderMid = midPoint(pos.l_sh, pos.r_sh);
+            const hipMid = midPoint(pos.l_hip, pos.r_hip);
+            mechParts.torso.position.lerp(midPoint(shoulderMid, hipMid), 0.5);
+            // Rotate torso to face forward somewhat
+            mechParts.torso.lookAt(midPoint(shoulderMid, hipMid).setZ(10));
+
+            // Place Joints
+            mechParts.leftShoulder.position.lerp(pos.l_sh, 0.5);
+            mechParts.rightShoulder.position.lerp(pos.r_sh, 0.5);
+            mechParts.leftElbow.position.lerp(pos.l_el, 0.5);
+            mechParts.rightElbow.position.lerp(pos.r_el, 0.5);
+            mechParts.leftHip.position.lerp(pos.l_hip, 0.5);
+            mechParts.rightHip.position.lerp(pos.r_hip, 0.5);
+            mechParts.leftKnee.position.lerp(pos.l_knee, 0.5);
+            mechParts.rightKnee.position.lerp(pos.r_knee, 0.5);
+
+            // Place Limbs between joints and orient them
+            const updateLimb = (partName, startPos, endPos) => {
+                const mesh = mechParts[partName];
+                mesh.position.lerp(midPoint(startPos, endPos), 0.5);
+                mesh.lookAt(endPos);
+                // Scale length to fit distance? (Optional: can look glitchy if tracking jitters. Fixed size often looks sturdier)
+                // const dist = startPos.distanceTo(endPos);
+                // mesh.scale.z = dist * 1.5; 
+            };
+
+            updateLimb('leftArmUpper', pos.l_sh, pos.l_el);
+            updateLimb('leftArmLower', pos.l_el, pos.l_wr);
+            updateLimb('rightArmUpper', pos.r_sh, pos.r_el);
+            updateLimb('rightArmLower', pos.r_el, pos.r_wr);
+            
+            updateLimb('leftLegUpper', pos.l_hip, pos.l_knee);
+            updateLimb('leftLegLower', pos.l_knee, pos.l_ank);
+            updateLimb('rightLegUpper', pos.r_hip, pos.r_knee);
+            updateLimb('rightLegLower', pos.r_knee, pos.r_ank);
+
+            // Update energy beams
+             bones.forEach(bone => {
+                const startObj = mechParts[bone.start];
+                // For wrists/ankles proxy, use actual position
+                let endPos = (['leftArmLower','rightArmLower','leftLegLower','rightLegLower'].includes(bone.end)) 
+                             ? mechParts[bone.end].position 
+                             : mechParts[bone.end].position;
+
+                const p = bone.line.geometry.attributes.position.array;
+                p[0] = startObj.position.x; p[1] = startObj.position.y; p[2] = startObj.position.z;
+                p[3] = endPos.x; p[4] = endPos.y; p[5] = endPos.z;
+                bone.line.geometry.attributes.position.needsUpdate = true;
+            });
+        }
+
+        const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+        pose.onResults(onResults);
+
+        const cameraUtils = new Camera(document.getElementById('input_video'), {
+            onFrame: async () => { await pose.send({image: document.getElementById('input_video')}); },
+            width: 640, height: 480
+        });
+        cameraUtils.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>

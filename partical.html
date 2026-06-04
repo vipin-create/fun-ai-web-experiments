@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gesture Controlled Particle System</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; }
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 200px;
+            height: 150px;
+            border: 2px solid #00ffcc;
+            border-radius: 10px;
+            overflow: hidden;
+            z-index: 10;
+            opacity: 0.8;
+        }
+        #input_video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror the webcam */
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00ffcc;
+            pointer-events: none;
+        }
+        h1 { margin: 0; font-size: 24px; text-shadow: 0 0 10px #00ffcc; }
+        p { margin: 5px 0; font-size: 14px; opacity: 0.8; }
+        .gesture-box {
+            margin-top: 10px;
+            padding: 10px;
+            background: rgba(0, 255, 204, 0.1);
+            border-left: 3px solid #00ffcc;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Neural Particles</h1>
+        <p>Status: <span id="status">Loading AI Model...</span></p>
+        <div class="gesture-box">
+            <strong>Gestures:</strong><br>
+            ✌️ Peace: Heart<br>
+            ✋ Open Palm: Saturn<br>
+            ✊ Fist: Flower<br>
+            ☝️ Point: Sphere<br>
+            🤏 Pinch: Expand/Contract
+        </div>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" autoplay playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+    <script>
+        // --- CONFIGURATION ---
+        const PARTICLE_COUNT = 15000;
+        const PARTICLE_SIZE = 0.08;
+        const MORPH_SPEED = 0.05;
+
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 30;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // --- PARTICLE SYSTEM ---
+        // We store current positions and target positions to interpolate between shapes
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(PARTICLE_COUNT * 3);
+        const targets = new Float32Array(PARTICLE_COUNT * 3);
+        const colors = new Float32Array(PARTICLE_COUNT * 3);
+
+        // Initialize Random Positions
+        for (let i = 0; i < PARTICLE_COUNT * 3; i++) {
+            positions[i] = (Math.random() - 0.5) * 50;
+            targets[i] = positions[i];
+            colors[i] = 1; // White initially
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const material = new THREE.PointsMaterial({
+            size: PARTICLE_SIZE,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            transparent: true,
+            opacity: 0.8
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // --- SHAPE GENERATORS ---
+        function getSpherePoint(r) {
+            const u = Math.random();
+            const v = Math.random();
+            const theta = 2 * Math.PI * u;
+            const phi = Math.acos(2 * v - 1);
+            return {
+                x: r * Math.sin(phi) * Math.cos(theta),
+                y: r * Math.sin(phi) * Math.sin(theta),
+                z: r * Math.cos(phi)
+            };
+        }
+
+        function generateSphere() {
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const p = getSpherePoint(10);
+                targets[i * 3] = p.x;
+                targets[i * 3 + 1] = p.y;
+                targets[i * 3 + 2] = p.z;
+                
+                // Color: Cyan/Blue
+                colors[i * 3] = 0.0;
+                colors[i * 3 + 1] = 0.5 + Math.random() * 0.5;
+                colors[i * 3 + 2] = 1.0;
+            }
+        }
+
+        function generateHeart() {
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                // 3D Heart approximation
+                let x = (Math.random() - 0.5) * 4; // Spread for volume
+                let theta = Math.random() * Math.PI * 2;
+                
+                // Parametric Heart Curve
+                let t = Math.random() * Math.PI * 2;
+                // Basic 2D heart extrusion + noise
+                let hx = 16 * Math.pow(Math.sin(t), 3);
+                let hy = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+                let hz = (Math.random() - 0.5) * 4; // Thickness
+
+                targets[i * 3] = hx * 0.5;
+                targets[i * 3 + 1] = hy * 0.5;
+                targets[i * 3 + 2] = hz;
+
+                // Color: Red/Pink
+                colors[i * 3] = 1.0;
+                colors[i * 3 + 1] = 0.0;
+                colors[i * 3 + 2] = 0.2 + Math.random() * 0.4;
+            }
+        }
+
+        function generateSaturn() {
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const isRing = Math.random() > 0.4; // 60% Ring, 40% Planet
+
+                if (isRing) {
+                    // Ring
+                    const angle = Math.random() * Math.PI * 2;
+                    const radius = 12 + Math.random() * 8;
+                    targets[i * 3] = Math.cos(angle) * radius;
+                    targets[i * 3 + 1] = (Math.random() - 0.5) * 0.5; // Thin vertically
+                    targets[i * 3 + 2] = Math.sin(angle) * radius;
+                    
+                    // Color: Gold/Orange
+                    colors[i * 3] = 1.0;
+                    colors[i * 3 + 1] = 0.8;
+                    colors[i * 3 + 2] = 0.2;
+                } else {
+                    // Planet Body
+                    const p = getSpherePoint(6);
+                    targets[i * 3] = p.x;
+                    targets[i * 3 + 1] = p.y;
+                    targets[i * 3 + 2] = p.z;
+                    
+                    // Color: Beige
+                    colors[i * 3] = 0.9;
+                    colors[i * 3 + 1] = 0.7;
+                    colors[i * 3 + 2] = 0.5;
+                }
+            }
+        }
+
+        function generateFlower() {
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const u = Math.random() * Math.PI * 2;
+                const v = Math.random() * Math.PI;
+                // Rose curve logic for mathematical flower
+                const k = 4; 
+                const r = 10 * Math.cos(k * u) + 2; 
+
+                targets[i * 3] = r * Math.sin(v) * Math.cos(u);
+                targets[i * 3 + 1] = r * Math.sin(v) * Math.sin(u);
+                targets[i * 3 + 2] = r * Math.cos(v);
+
+                // Color: Purple/Green
+                colors[i * 3] = 0.6;
+                colors[i * 3 + 1] = 0.0;
+                colors[i * 3 + 2] = 1.0;
+            }
+        }
+
+        // Default shape
+        generateSphere();
+
+        // --- HAND TRACKING INTEGRATION ---
+        const videoElement = document.getElementById('input_video');
+        const statusElement = document.getElementById('status');
+        let activeShape = 'sphere';
+        let pinchDistance = 0;
+        let handX = 0;
+        let handY = 0;
+
+        function onResults(results) {
+            statusElement.innerText = "Tracking Active";
+            statusElement.style.color = "#00ffcc";
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+
+                // 1. Calculate Hand Position (Index Finger Tip)
+                // Normalize coordinates from [0,1] to scene range roughly [-10, 10]
+                const indexTip = landmarks[8];
+                handX = (0.5 - indexTip.x) * 20; 
+                handY = (0.5 - indexTip.y) * 20;
+
+                // 2. Calculate Pinch (Thumb Tip to Index Tip)
+                const thumbTip = landmarks[4];
+                const dx = indexTip.x - thumbTip.x;
+                const dy = indexTip.y - thumbTip.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                // Map distance: close ~0.02, far ~0.2
+                pinchDistance = Math.max(0.5, Math.min(3.0, dist * 10)); // Scale factor
+
+                // 3. Gesture Recognition for Shape Switching
+                // Simple logic: Count extended fingers
+                const tips = [8, 12, 16, 20]; // Index, Middle, Ring, Pinky
+                const bases = [5, 9, 13, 17]; 
+                let fingersUp = 0;
+                
+                // Thumb is tricky, ignore for shape, use other 4
+                for(let i=0; i<4; i++) {
+                    if(landmarks[tips[i]].y < landmarks[bases[i]].y) fingersUp++;
+                }
+
+                // Map fingers to shapes
+                let newShape = activeShape;
+                if (fingersUp === 0) newShape = 'flower';      // Fist
+                else if (fingersUp === 1) newShape = 'sphere'; // Point
+                else if (fingersUp === 2) newShape = 'heart';  // Peace
+                else if (fingersUp >= 4) newShape = 'saturn';  // Open Hand
+
+                if (newShape !== activeShape) {
+                    activeShape = newShape;
+                    if(activeShape === 'heart') generateHeart();
+                    if(activeShape === 'sphere') generateSphere();
+                    if(activeShape === 'saturn') generateSaturn();
+                    if(activeShape === 'flower') generateFlower();
+                    geometry.attributes.color.needsUpdate = true;
+                }
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 320,
+            height: 240
+        });
+        cameraUtils.start();
+
+        // --- ANIMATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const posAttr = geometry.attributes.position;
+            const pArr = posAttr.array;
+
+            // Interpolate points towards target
+            for (let i = 0; i < PARTICLE_COUNT * 3; i++) {
+                // Apply Scale based on Pinch (pinchDistance)
+                let targetVal = targets[i] * (pinchDistance || 1);
+                
+                // Morphing Logic: lerp current to target
+                pArr[i] += (targetVal - pArr[i]) * MORPH_SPEED;
+            }
+
+            // Add subtle rotation based on hand position
+            particles.rotation.y += 0.002 + (handX * 0.001);
+            particles.rotation.x += (handY * 0.001);
+
+            posAttr.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>

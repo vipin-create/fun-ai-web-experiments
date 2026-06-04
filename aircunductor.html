@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Air Conductor Prototype</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        canvas { display: block; }
+        /* Mirror the webcam video for natural feel */
+        #video-feed { position: absolute; top: 0; left: 0; opacity: 0.2; transform: scaleX(-1); z-index: -1; visibility: hidden;} 
+        
+        /* Start Button Overlay */
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center;
+            color: white; flex-direction: column; z-index: 10;
+        }
+        button { padding: 15px 30px; font-size: 20px; cursor: pointer; background: #00d2ff; border: none; border-radius: 5px; }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1>The Air Conductor</h1>
+        <p>Allow camera access. Raise your hand.</p>
+        <button id="start-btn">START EXPERIENCE</button>
+    </div>
+
+    <video id="video-feed"></video>
+
+    <script>
+        // --- GLOBAL VARIABLES ---
+        let scene, camera, renderer;
+        let handMesh, drumCube; // Our visual objects
+        let synth; // Our audio instrument
+        let isTouching = false; // Debounce flag
+        let handPosition = new THREE.Vector3(0, 0, 0); // Stores mapped hand coordinates
+
+        // --- 1. SETUP THREE.JS (The World) ---
+        function initThree() {
+            scene = new THREE.Scene();
+            
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0xffffff, 1);
+            pointLight.position.set(5, 5, 5);
+            scene.add(pointLight);
+
+            // CREATE THE "DRUM" (Target)
+            const geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+            const material = new THREE.MeshLambertMaterial({ color: 0x00ff00, emissive: 0x004400 });
+            drumCube = new THREE.Mesh(geometry, material);
+            drumCube.position.set(0, 0, 0); // Center of screen
+            scene.add(drumCube);
+
+            // CREATE THE "FINGER" (Cursor)
+            const handGeo = new THREE.SphereGeometry(0.2, 16, 16);
+            const handMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            handMesh = new THREE.Mesh(handGeo, handMat);
+            scene.add(handMesh);
+
+            animate();
+        }
+
+        // --- 2. SETUP TONE.JS (The Audio) ---
+        function initAudio() {
+            // Simple synth with some reverb
+            const reverb = new Tone.Reverb(1.5).toDestination();
+            synth = new Tone.PolySynth(Tone.Synth).connect(reverb);
+            console.log("Audio Ready");
+        }
+
+        // --- 3. SETUP MEDIAPIPE (The Eye) ---
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // Get Index Finger Tip (Landmark #8)
+                // MediaPipe gives coordinates 0.0 to 1.0. We map to Three.js world space.
+                // Note: x is inverted (-1) because we want a mirror effect.
+                const x = (landmarks[8].x - 0.5) * -10; 
+                const y = (landmarks[8].y - 0.5) * -8;
+                // z is usually consistent, we keep it fixed or scaled slightly
+                const z = 0; 
+
+                // Update the "Finger" visual
+                handMesh.position.set(x, y, z);
+                handPosition.set(x, y, z);
+            }
+        }
+
+        // --- 4. THE GAME LOOP (Physics & Logic) ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Rotate the drum slowly for style
+            drumCube.rotation.x += 0.01;
+            drumCube.rotation.y += 0.01;
+
+            // COLLISION DETECTION
+            // Distance between finger and drum center
+            const distance = handPosition.distanceTo(drumCube.position);
+            const hitThreshold = 1.2; // roughly radius of cube + radius of finger
+
+            if (distance < hitThreshold) {
+                if (!isTouching) {
+                    // HIT START
+                    drumCube.material.emissive.setHex(0x00ff00); // Flash bright
+                    drumCube.scale.set(1.1, 1.1, 1.1); // Pulse up
+                    
+                    if(synth) synth.triggerAttackRelease("C4", "8n"); // Play Sound
+                    
+                    isTouching = true;
+                }
+            } else {
+                // HIT END
+                drumCube.material.emissive.setHex(0x004400); // Dim
+                drumCube.scale.set(1, 1, 1); // Reset scale
+                isTouching = false;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // --- INITIALIZATION ---
+        const videoElement = document.getElementById('video-feed');
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        hands.onResults(onResults);
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        // Start Button Logic
+        document.getElementById('start-btn').addEventListener('click', async () => {
+            await Tone.start(); // Resume AudioContext
+            initAudio();
+            initThree();
+            cameraFeed.start();
+            document.getElementById('overlay').style.display = 'none';
+        });
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            if(camera && renderer) {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+        });
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Air Conductor: Pro Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; }
+        #video-feed { position: absolute; top: 0; left: 0; transform: scaleX(-1); visibility: hidden; } 
+        
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); display: flex; justify-content: center; align-items: center;
+            color: #00d2ff; flex-direction: column; z-index: 10; text-align: center;
+        }
+        h1 { text-shadow: 0 0 20px #00d2ff; margin-bottom: 10px; }
+        button { 
+            padding: 15px 40px; font-size: 18px; cursor: pointer; 
+            background: transparent; color: #00d2ff; border: 2px solid #00d2ff; 
+            border-radius: 30px; transition: 0.3s; font-weight: bold;
+        }
+        button:hover { background: #00d2ff; color: #000; box-shadow: 0 0 30px #00d2ff; }
+        
+        #hud {
+            position: absolute; top: 20px; left: 20px; color: white; pointer-events: none;
+        }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1>THE AIR CONDUCTOR</h1>
+        <p>PRO EDITION<br>Pentatonic Scale • Velocity Tracking • Particle Physics</p>
+        <br>
+        <button id="start-btn">INITIALIZE SYSTEM</button>
+    </div>
+
+    <div id="hud">
+        VELOCITY: <span id="vel-readout">0</span><br>
+        ACTIVE NOTE: <span id="note-readout">--</span>
+    </div>
+
+    <video id="video-feed"></video>
+
+    <script>
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            sensitivity: 1.5, // Hit radius
+            smoothing: 0.5,   // Hand movement smoothing (0.1 = loose, 0.9 = tight)
+            decay: 0.95       // How fast particles fade
+        };
+
+        // --- GLOBAL VARIABLES ---
+        let scene, camera, renderer;
+        let handMesh, trailGeo, trailMesh; 
+        let keys = []; // Array to hold our instrument keys
+        let particles = []; // Array to hold explosion particles
+        let synth;
+        
+        // Tracking Variables
+        let handPos = new THREE.Vector3(0,0,0);
+        let previousHandPos = new THREE.Vector3(0,0,0);
+        let currentVelocity = 0;
+        let trailPositions = new Array(20).fill(new THREE.Vector3(0,0,0)); // For tail effect
+
+        // --- CLASS: THE VIRTUAL KEY ---
+        class VirtualKey {
+            constructor(x, color, note) {
+                this.originalColor = new THREE.Color(color);
+                this.note = note;
+                this.isTriggered = false;
+
+                // Geometry
+                const geometry = new THREE.BoxGeometry(1.2, 2.5, 1.2);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: this.originalColor, 
+                    emissive: 0x000000,
+                    shininess: 100,
+                    transparent: true,
+                    opacity: 0.8
+                });
+                
+                this.mesh = new THREE.Mesh(geometry, material);
+                this.mesh.position.set(x, 0, 0);
+                scene.add(this.mesh);
+            }
+
+            update() {
+                // Idle animation (gentle floating)
+                this.mesh.position.y = Math.sin(Date.now() * 0.002 + this.mesh.position.x) * 0.2;
+                
+                // Return to normal color
+                this.mesh.material.emissive.lerp(new THREE.Color(0x000000), 0.1);
+                this.mesh.scale.lerp(new THREE.Vector3(1, 1, 1), 0.1);
+            }
+
+            hit(velocity) {
+                // 1. VISUAL: Flash and Scale
+                // Map velocity to brightness (faster = brighter)
+                let intensity = Math.min(velocity * 2, 1); 
+                this.mesh.material.emissive.copy(this.originalColor).multiplyScalar(intensity + 0.5);
+                this.mesh.scale.set(1.1, 1.3, 1.1);
+
+                // 2. AUDIO: Play Sound
+                // Map velocity to volume (0 to 1 range)
+                let vol = Math.min(velocity, 1); 
+                synth.triggerAttackRelease(this.note, "8n", Tone.now(), vol);
+
+                // 3. PHYSICS: Spawn Particles
+                createExplosion(this.mesh.position, this.originalColor);
+
+                // 4. UI Update
+                document.getElementById('note-readout').innerText = this.note;
+                document.getElementById('note-readout').style.color = "#" + this.originalColor.getHexString();
+            }
+        }
+
+        // --- 1. SETUP THREE.JS ---
+        function initThree() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x111111, 0.08); // Depth fog
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 8;
+            camera.position.y = 1;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x111111);
+            document.body.appendChild(renderer.domElement);
+
+            // Lights
+            const ambient = new THREE.AmbientLight(0xffffff, 0.2);
+            scene.add(ambient);
+            const spot = new THREE.SpotLight(0xffffff, 1);
+            spot.position.set(10, 20, 10);
+            scene.add(spot);
+
+            // Create Instruments (Pentatonic Scale)
+            // Positions: -4, -2, 0, 2, 4
+            const colors = [0xff0000, 0xffaa00, 0xffff00, 0x00ff00, 0x00aaff];
+            const notes = ["C4", "D4", "E4", "G4", "A4"];
+            
+            for(let i=0; i<5; i++) {
+                keys.push(new VirtualKey((i-2)*2.2, colors[i], notes[i]));
+            }
+
+            // Hand Cursor & Trail
+            const handGeo = new THREE.IcosahedronGeometry(0.3, 1);
+            const handMat = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true });
+            handMesh = new THREE.Mesh(handGeo, handMat);
+            scene.add(handMesh);
+
+            animate();
+        }
+
+        // --- 2. SETUP PARTICLES ---
+        function createExplosion(pos, color) {
+            const particleCount = 15;
+            const geometry = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+            const material = new THREE.MeshBasicMaterial({ color: color });
+
+            for (let i = 0; i < particleCount; i++) {
+                const mesh = new THREE.Mesh(geometry, material);
+                
+                // Start at instrument position
+                mesh.position.copy(pos);
+                
+                // Random velocity direction
+                mesh.userData.velocity = new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.5,
+                    (Math.random() - 0.5) * 0.5,
+                    (Math.random() - 0.5) * 0.5
+                );
+                
+                scene.add(mesh);
+                particles.push(mesh);
+            }
+        }
+
+        // --- 3. SETUP AUDIO ---
+        function initAudio() {
+            // A Synth with some "bite"
+            const reverb = new Tone.Reverb(2).toDestination();
+            const delay = new Tone.FeedbackDelay("8n", 0.5).connect(reverb);
+            
+            synth = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: "fatsawtooth" },
+                envelope: { attack: 0.01, decay: 0.1, sustain: 0.1, release: 1 }
+            }).connect(delay);
+        }
+
+        // --- 4. MEDIAPIPE TRACKING ---
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const indexTip = landmarks[8];
+
+                // Map coordinates
+                const targetX = (indexTip.x - 0.5) * -16; // Wider range
+                const targetY = (indexTip.y - 0.5) * -10;
+                
+                // Smooth movement (Lerp)
+                handPos.x = THREE.MathUtils.lerp(handPos.x, targetX, CONFIG.smoothing);
+                handPos.y = THREE.MathUtils.lerp(handPos.y, targetY, CONFIG.smoothing);
+                
+                // Update Mesh
+                handMesh.position.copy(handPos);
+                
+                // Rotate cursor based on movement
+                handMesh.rotation.x += 0.1;
+                handMesh.rotation.y += 0.1;
+            }
+        }
+
+        // --- 5. MAIN LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. CALCULATE VELOCITY
+            // Distance traveled since last frame
+            let instantVelocity = handPos.distanceTo(previousHandPos);
+            // Amplify for easier reading (0.0 to 1.0ish)
+            currentVelocity = THREE.MathUtils.lerp(currentVelocity, instantVelocity * 5, 0.2); 
+            
+            // UI Update
+            document.getElementById('vel-readout').innerText = currentVelocity.toFixed(2);
+            document.getElementById('vel-readout').style.fontSize = (12 + (currentVelocity * 10)) + "px";
+
+            // 2. CHECK COLLISIONS
+            keys.forEach(key => {
+                key.update(); // Run idle animation
+                
+                const distance = handPos.distanceTo(key.mesh.position);
+                
+                if (distance < CONFIG.sensitivity) {
+                    if (!key.isTriggered) {
+                        key.hit(currentVelocity); // Pass velocity to the key
+                        key.isTriggered = true;
+                    }
+                } else {
+                    key.isTriggered = false;
+                }
+            });
+
+            // 3. UPDATE PARTICLES
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.position.add(p.userData.velocity); // Move
+                p.scale.multiplyScalar(CONFIG.decay); // Shrink
+                p.rotation.x += 0.1;
+                
+                if (p.scale.x < 0.05) {
+                    scene.remove(p);
+                    particles.splice(i, 1);
+                }
+            }
+
+            // Save position for next frame's velocity calc
+            previousHandPos.copy(handPos);
+
+            renderer.render(scene, camera);
+        }
+
+        // --- INIT ---
+        const videoElement = document.getElementById('video-feed');
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        hands.onResults(onResults);
+        
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        document.getElementById('start-btn').addEventListener('click', async () => {
+            await Tone.start();
+            initAudio();
+            initThree();
+            cameraFeed.start();
+            document.getElementById('overlay').style.display = 'none';
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>

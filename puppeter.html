@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Full Body Puppeteer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 240px;
+            height: 180px;
+            border: 2px solid #00ffcc;
+            border-radius: 8px;
+            overflow: hidden;
+            z-index: 10;
+            opacity: 0.9;
+        }
+        #input_video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror */
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00ffcc;
+            pointer-events: none;
+        }
+        h1 { margin: 0; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0 0 10px rgba(0,255,204,0.5); }
+        .instruction { background: rgba(0,0,0,0.5); padding: 10px; border-left: 4px solid #00ffcc; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Kaiju Puppeteer</h1>
+        <div class="instruction">
+            <strong>Status:</strong> <span id="status">Loading Neural Net...</span><br>
+            ⚠️ Stand back until your <strong>full body</strong> is visible.<br>
+            The robot mimics your movements 1:1.
+        </div>
+    </div>
+
+    <div id="video-container">
+        <video id="input_video" autoplay playsinline></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+
+    <script>
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        // Add some fog for depth
+        scene.fog = new THREE.FogExp2(0x1a1a1a, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1, 5); // Eye level
+        camera.lookAt(0, 1, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // --- LIGHTING ---
+        const ambLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambLight);
+
+        const dirLight = new THREE.DirectionalLight(0x00ffcc, 1);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        const purpleLight = new THREE.PointLight(0xff00ff, 1, 20);
+        purpleLight.position.set(-5, 5, -5);
+        scene.add(purpleLight);
+
+        // --- FLOOR ---
+        const gridHelper = new THREE.GridHelper(50, 50, 0x444444, 0x222222);
+        scene.add(gridHelper);
+
+        // --- ROBOT AVATAR CONSTRUCTION ---
+        // We build a "ragdoll" out of meshes. Each joint maps to a MediaPipe landmark.
+        
+        const robotMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x222222, 
+            roughness: 0.2, 
+            metalness: 0.8,
+            emissive: 0x00ffcc,
+            emissiveIntensity: 0.2
+        });
+        
+        const jointMaterial = new THREE.MeshBasicMaterial({ color: 0xff00ff }); // Joints are purple
+
+        function createLimb(radius, length) {
+            const geometry = new THREE.CylinderGeometry(radius, radius * 0.8, length, 16);
+            geometry.translate(0, length / 2, 0); // Pivot at the bottom
+            const mesh = new THREE.Mesh(geometry, robotMaterial);
+            mesh.castShadow = true;
+            return mesh;
+        }
+
+        function createJoint() {
+            const geometry = new THREE.SphereGeometry(0.15, 16, 16);
+            return new THREE.Mesh(geometry, jointMaterial);
+        }
+
+        // Store references to our 3D parts
+        const avatar = {
+            // Joints (Spheres)
+            nose: createJoint(),
+            leftShoulder: createJoint(),
+            rightShoulder: createJoint(),
+            leftElbow: createJoint(),
+            rightElbow: createJoint(),
+            leftWrist: createJoint(),
+            rightWrist: createJoint(),
+            leftHip: createJoint(),
+            rightHip: createJoint(),
+            leftKnee: createJoint(),
+            rightKnee: createJoint(),
+            leftAnkle: createJoint(),
+            rightAnkle: createJoint(),
+            
+            // Connectors (Lines/Cylinders) - simplistic "bones"
+            bones: [] 
+        };
+
+        // Add Joints to Scene
+        Object.values(avatar).forEach(part => {
+            if(part instanceof THREE.Mesh) scene.add(part);
+        });
+
+        // Connector Lines (The Skeleton)
+        const boneMaterial = new THREE.LineBasicMaterial({ color: 0x00ffcc, linewidth: 3 });
+        // We will create dynamic lines that connect joints
+        const connections = [
+            ['nose', 'leftShoulder'], ['nose', 'rightShoulder'],
+            ['leftShoulder', 'rightShoulder'],
+            ['leftShoulder', 'leftElbow'], ['leftElbow', 'leftWrist'],
+            ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightWrist'],
+            ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip'],
+            ['leftHip', 'rightHip'],
+            ['leftHip', 'leftKnee'], ['leftKnee', 'leftAnkle'],
+            ['rightHip', 'rightKnee'], ['rightKnee', 'rightAnkle']
+        ];
+
+        connections.forEach(pair => {
+            const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,1,0)]);
+            const line = new THREE.Line(geometry, boneMaterial);
+            scene.add(line);
+            avatar.bones.push({ line: line, start: pair[0], end: pair[1] });
+        });
+
+        // --- MEDIAPIPE POSE SETUP ---
+        const videoElement = document.getElementById('input_video');
+        const statusElement = document.getElementById('status');
+
+        function onResults(results) {
+            statusElement.innerText = "Tracking Active";
+            statusElement.style.color = "#00ffcc";
+
+            if (!results.poseLandmarks) return;
+
+            const lm = results.poseLandmarks;
+
+            // Helper to map MediaPipe (0 to 1) to Three.js World coords (-x to +x)
+            // MediaPipe: Y is down (0 top, 1 bottom). ThreeJS: Y is up.
+            // Z needs amplification for depth effect.
+            const mapPos = (landmark) => {
+                return new THREE.Vector3(
+                    (landmark.x - 0.5) * -6,  // Flip X for mirror effect, widen scale
+                    (1 - landmark.y) * 5 - 2, // Invert Y, shift down to floor
+                    landmark.z * -3           // Depth scaling
+                );
+            };
+
+            // Update Joint Positions
+            // MediaPipe Landmark Indices:
+            // 0: Nose, 11: L_Shoulder, 12: R_Shoulder, 13: L_Elbow, 14: R_Elbow, 15: L_Wrist, 16: R_Wrist
+            // 23: L_Hip, 24: R_Hip, 25: L_Knee, 26: R_Knee, 27: L_Ankle, 28: R_Ankle
+            
+            const updatePart = (partName, index) => {
+                if(lm[index].visibility > 0.5) {
+                    const pos = mapPos(lm[index]);
+                    // Smooth lerp for less jitter
+                    avatar[partName].position.lerp(pos, 0.5); 
+                }
+            };
+
+            updatePart('nose', 0);
+            updatePart('leftShoulder', 11);
+            updatePart('rightShoulder', 12);
+            updatePart('leftElbow', 13);
+            updatePart('rightElbow', 14);
+            updatePart('leftWrist', 15);
+            updatePart('rightWrist', 16);
+            updatePart('leftHip', 23);
+            updatePart('rightHip', 24);
+            updatePart('leftKnee', 25);
+            updatePart('rightKnee', 26);
+            updatePart('leftAnkle', 27);
+            updatePart('rightAnkle', 28);
+
+            // Update Bones (Lines connecting joints)
+            avatar.bones.forEach(bone => {
+                const startObj = avatar[bone.start];
+                const endObj = avatar[bone.end];
+                
+                const positions = bone.line.geometry.attributes.position.array;
+                positions[0] = startObj.position.x;
+                positions[1] = startObj.position.y;
+                positions[2] = startObj.position.z;
+                positions[3] = endObj.position.x;
+                positions[4] = endObj.position.y;
+                positions[5] = endObj.position.z;
+                bone.line.geometry.attributes.position.needsUpdate = true;
+            });
+        }
+
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            enableSegmentation: false,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        pose.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        cameraUtils.start();
+
+        // --- RENDER LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
